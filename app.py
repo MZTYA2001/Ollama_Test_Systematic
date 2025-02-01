@@ -12,89 +12,171 @@ import streamlit as st
 import os
 import time
 import sys
+import logging
+from typing import Optional
+import chromadb
+from chromadb.config import Settings
 
-if not os.path.exists('files'):
-    os.mkdir('files')
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-if not os.path.exists('jj'):
-    os.mkdir('jj')
+# Create necessary directories
+os.makedirs('files', exist_ok=True)
+os.makedirs('jj', exist_ok=True)
 
-if 'template' not in st.session_state:
-    st.session_state.template = """You are a knowledgeable chatbot, here to help with questions of the user. Your tone should be professional and informative.
-
-    Context: {context}
-    History: {history}
-
-    User: {question}
-    Chatbot:"""
-if 'prompt' not in st.session_state:
-    st.session_state.prompt = PromptTemplate(
-        input_variables=["history", "context", "question"],
-        template=st.session_state.template,
-    )
-if 'memory' not in st.session_state:
-    st.session_state.memory = ConversationBufferMemory(
-        memory_key="history",
-        return_messages=True,
-        input_key="question")
-if 'vectorstore' not in st.session_state:
-    st.session_state.vectorstore = Chroma(persist_directory='jj',
-                                          embedding_function=OllamaEmbeddings(base_url='http://localhost:11434',
-                                                                              model="mistral")
-                                          )
-if 'llm' not in st.session_state:
-    st.session_state.llm = Ollama(base_url="http://localhost:11434",
-                                  model="mistral",
-                                  verbose=True,
-                                  callback_manager=CallbackManager(
-                                      [StreamingStdOutCallbackHandler()]),
-                                  )
-
-# Initialize session state
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-
-st.title("PDF Chatbot")
-
-# Upload a PDF file
-uploaded_file = st.file_uploader("Upload your PDF", type='pdf')
-
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.markdown(message["message"])
-
-if uploaded_file is not None:
-    if not os.path.isfile("files/"+uploaded_file.name+".pdf"):
-        with st.status("Analyzing your document..."):
-            bytes_data = uploaded_file.read()
-            f = open("files/"+uploaded_file.name+".pdf", "wb")
-            f.write(bytes_data)
-            f.close()
-            loader = PyPDFLoader("files/"+uploaded_file.name+".pdf")
-            data = loader.load()
-
-            # Initialize text splitter
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1500,
-                chunk_overlap=200,
-                length_function=len
+class ChromaDBHandler:
+    """Handler for ChromaDB operations with better error management."""
+    
+    def __init__(self, persist_dir: str = 'jj'):
+        self.persist_dir = persist_dir
+        self._client = None
+        self._settings = None
+        self.init_settings()
+    
+    def init_settings(self):
+        """Initialize ChromaDB settings."""
+        try:
+            self._settings = Settings(
+                persist_directory=self.persist_dir,
+                is_persistent=True,
+                anonymized_telemetry=False
             )
-            all_splits = text_splitter.split_documents(data)
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaDB settings: {str(e)}")
+            raise
 
-            # Create and persist the vector store
-            st.session_state.vectorstore = Chroma.from_documents(
-                documents=all_splits,
-                embedding=OllamaEmbeddings(model="mistral")
+    @property
+    def client(self):
+        """Get ChromaDB client with lazy initialization."""
+        if self._client is None:
+            try:
+                self._client = chromadb.PersistentClient(
+                    path=self.persist_dir,
+                    settings=self._settings
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize ChromaDB client: {str(e)}")
+                raise
+        return self._client
+
+def init_chroma(persist_dir: str = 'jj') -> Optional[Chroma]:
+    """Initialize ChromaDB with proper settings and error handling."""
+    try:
+        handler = ChromaDBHandler(persist_dir)
+        
+        return Chroma(
+            persist_directory=persist_dir,
+            embedding_function=OllamaEmbeddings(
+                base_url='http://localhost:11434',
+                model="mistral"
+            ),
+            client_settings=handler._settings,
+            client=handler.client
+        )
+    except ImportError as e:
+        st.error("ChromaDB is not properly installed. Please check your installation.")
+        logger.error(f"ChromaDB import error: {str(e)}")
+        return None
+    except Exception as e:
+        st.error(f"Failed to initialize ChromaDB: {str(e)}")
+        logger.error(f"ChromaDB initialization error: {str(e)}")
+        return None
+
+def init_session_state():
+    """Initialize Streamlit session state with necessary components."""
+    if 'template' not in st.session_state:
+        st.session_state.template = """You are a knowledgeable chatbot, here to help with questions about the document. Your tone should be professional and informative.
+
+        Context: {context}
+        History: {history}
+
+        User: {question}
+        Chatbot:"""
+
+    if 'prompt' not in st.session_state:
+        st.session_state.prompt = PromptTemplate(
+            input_variables=["history", "context", "question"],
+            template=st.session_state.template,
+        )
+
+    if 'memory' not in st.session_state:
+        st.session_state.memory = ConversationBufferMemory(
+            memory_key="history",
+            return_messages=True,
+            input_key="question"
+        )
+
+    if 'vectorstore' not in st.session_state:
+        vectorstore = init_chroma()
+        if vectorstore is None:
+            st.error("Failed to initialize vector store. Please check the logs for details.")
+            sys.exit(1)
+        st.session_state.vectorstore = vectorstore
+
+    if 'llm' not in st.session_state:
+        try:
+            st.session_state.llm = Ollama(
+                base_url="http://localhost:11434",
+                model="mistral",
+                verbose=True,
+                callback_manager=CallbackManager([StreamingStdOutCallbackHandler()])
             )
-            st.session_state.vectorstore.persist()
+        except Exception as e:
+            st.error(f"Failed to initialize Ollama LLM: {str(e)}")
+            logger.error(f"Ollama initialization error: {str(e)}")
+            sys.exit(1)
 
-    st.session_state.retriever = st.session_state.vectorstore.as_retriever()
-    # Initialize the QA chain
-    if 'qa_chain' not in st.session_state:
-        st.session_state.qa_chain = RetrievalQA.from_chain_type(
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+
+def process_pdf(file) -> Optional[Chroma]:
+    """Process uploaded PDF file with error handling."""
+    try:
+        file_path = os.path.join("files", f"{file.name}.pdf")
+        
+        # Save uploaded file
+        with open(file_path, "wb") as f:
+            f.write(file.read())
+        
+        # Load and process PDF
+        loader = PyPDFLoader(file_path)
+        data = loader.load()
+        
+        # Split text into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1500,
+            chunk_overlap=200,
+            length_function=len
+        )
+        splits = text_splitter.split_documents(data)
+        
+        if not splits:
+            st.warning("No text content found in the PDF.")
+            return None
+        
+        # Update vector store
+        vectorstore = Chroma.from_documents(
+            documents=splits,
+            embedding=OllamaEmbeddings(model="mistral"),
+            persist_directory='jj',
+            client_settings=ChromaDBHandler()._settings
+        )
+        vectorstore.persist()
+        
+        return vectorstore
+    except Exception as e:
+        st.error(f"Error processing PDF: {str(e)}")
+        logger.error(f"PDF processing error: {str(e)}")
+        return None
+
+def init_qa_chain(retriever):
+    """Initialize the QA chain with error handling."""
+    try:
+        return RetrievalQA.from_chain_type(
             llm=st.session_state.llm,
             chain_type='stuff',
-            retriever=st.session_state.retriever,
+            retriever=retriever,
             verbose=True,
             chain_type_kwargs={
                 "verbose": True,
@@ -102,28 +184,78 @@ if uploaded_file is not None:
                 "memory": st.session_state.memory,
             }
         )
+    except Exception as e:
+        st.error(f"Failed to initialize QA chain: {str(e)}")
+        logger.error(f"QA chain initialization error: {str(e)}")
+        return None
 
-    # Chat input
-    if user_input := st.chat_input("You:", key="user_input"):
-        user_message = {"role": "user", "message": user_input}
-        st.session_state.chat_history.append(user_message)
-        with st.chat_message("user"):
-            st.markdown(user_input)
-        with st.chat_message("assistant"):
-            with st.spinner("Assistant is typing..."):
-                response = st.session_state.qa_chain(user_input)
-            message_placeholder = st.empty()
-            full_response = ""
-            for chunk in response['result'].split():
-                full_response += chunk + " "
-                time.sleep(0.05)
-                # Add a blinking cursor to simulate typing
-                message_placeholder.markdown(full_response + "▌")
-            message_placeholder.markdown(full_response)
+def main():
+    """Main application function."""
+    try:
+        st.title("PDF Chatbot")
+        
+        # Initialize session state
+        init_session_state()
+        
+        # Display chat history
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.markdown(message["message"])
+        
+        # File uploader
+        uploaded_file = st.file_uploader("Upload your PDF", type='pdf')
+        
+        if uploaded_file:
+            file_path = os.path.join("files", f"{uploaded_file.name}.pdf")
+            
+            if not os.path.isfile(file_path):
+                with st.status("Analyzing your document..."):
+                    vectorstore = process_pdf(uploaded_file)
+                    if vectorstore:
+                        st.session_state.vectorstore = vectorstore
+                        st.session_state.retriever = vectorstore.as_retriever()
+            
+            if 'retriever' in st.session_state and 'qa_chain' not in st.session_state:
+                qa_chain = init_qa_chain(st.session_state.retriever)
+                if qa_chain:
+                    st.session_state.qa_chain = qa_chain
+            
+            # Chat interface
+            if user_input := st.chat_input("You:", key="user_input"):
+                # Add user message
+                user_message = {"role": "user", "message": user_input}
+                st.session_state.chat_history.append(user_message)
+                
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+                
+                # Generate and display response
+                with st.chat_message("assistant"):
+                    with st.spinner("Assistant is typing..."):
+                        try:
+                            response = st.session_state.qa_chain(user_input)
+                            
+                            message_placeholder = st.empty()
+                            full_response = ""
+                            
+                            # Simulate typing effect
+                            for chunk in response['result'].split():
+                                full_response += chunk + " "
+                                time.sleep(0.05)
+                                message_placeholder.markdown(full_response + "▌")
+                            message_placeholder.markdown(full_response)
+                            
+                            # Add assistant message to history
+                            chatbot_message = {"role": "assistant", "message": response['result']}
+                            st.session_state.chat_history.append(chatbot_message)
+                        except Exception as e:
+                            st.error(f"Error generating response: {str(e)}")
+                            logger.error(f"Response generation error: {str(e)}")
+        else:
+            st.write("Please upload a PDF file.")
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
+        logger.error(f"Main application error: {str(e)}")
 
-        chatbot_message = {"role": "assistant", "message": response['result']}
-        st.session_state.chat_history.append(chatbot_message)
-
-
-else:
-    st.write("Please upload a PDF file.")
+if __name__ == "__main__":
+    main()
