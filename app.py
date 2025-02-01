@@ -21,6 +21,13 @@ from chromadb.config import Settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Handle SQLite requirements for ChromaDB
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
+
 # Create necessary directories
 os.makedirs('files', exist_ok=True)
 os.makedirs('jj', exist_ok=True)
@@ -65,12 +72,14 @@ def init_chroma(persist_dir: str = 'jj') -> Optional[Chroma]:
     try:
         handler = ChromaDBHandler(persist_dir)
         
+        embeddings = OllamaEmbeddings(
+            base_url='http://localhost:11434',
+            model="mistral"
+        )
+        
         return Chroma(
             persist_directory=persist_dir,
-            embedding_function=OllamaEmbeddings(
-                base_url='http://localhost:11434',
-                model="mistral"
-            ),
+            embedding_function=embeddings,
             client_settings=handler._settings,
             client=handler.client
         )
@@ -155,12 +164,20 @@ def process_pdf(file) -> Optional[Chroma]:
             st.warning("No text content found in the PDF.")
             return None
         
+        # Create embeddings
+        embeddings = OllamaEmbeddings(
+            model="mistral",
+            base_url="http://localhost:11434"
+        )
+        
         # Update vector store
+        handler = ChromaDBHandler('jj')
         vectorstore = Chroma.from_documents(
             documents=splits,
-            embedding=OllamaEmbeddings(model="mistral"),
+            embedding=embeddings,
             persist_directory='jj',
-            client_settings=ChromaDBHandler()._settings
+            client_settings=handler._settings,
+            client=handler.client
         )
         vectorstore.persist()
         
