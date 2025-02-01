@@ -14,29 +14,21 @@ import time
 import sys
 import logging
 from typing import Optional
-import chromadb
-from chromadb.config import Settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Handle SQLite requirements for ChromaDB
-try:
-    import pysqlite3
-    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
-except ImportError:
-    pass
+import chromadb
+from chromadb.config import Settings
 
 # Create necessary directories
 os.makedirs('files', exist_ok=True)
-os.makedirs('jj', exist_ok=True)
 
 class ChromaDBHandler:
     """Handler for ChromaDB operations with better error management."""
     
-    def __init__(self, persist_dir: str = 'jj'):
-        self.persist_dir = persist_dir
+    def __init__(self):
         self._client = None
         self._settings = None
         self.init_settings()
@@ -45,8 +37,7 @@ class ChromaDBHandler:
         """Initialize ChromaDB settings."""
         try:
             self._settings = Settings(
-                persist_directory=self.persist_dir,
-                is_persistent=True,
+                is_persistent=False,  # Use in-memory storage
                 anonymized_telemetry=False
             )
         except Exception as e:
@@ -58,19 +49,16 @@ class ChromaDBHandler:
         """Get ChromaDB client with lazy initialization."""
         if self._client is None:
             try:
-                self._client = chromadb.PersistentClient(
-                    path=self.persist_dir,
-                    settings=self._settings
-                )
+                self._client = chromadb.Client(settings=self._settings)
             except Exception as e:
                 logger.error(f"Failed to initialize ChromaDB client: {str(e)}")
                 raise
         return self._client
 
-def init_chroma(persist_dir: str = 'jj') -> Optional[Chroma]:
+def init_chroma() -> Optional[Chroma]:
     """Initialize ChromaDB with proper settings and error handling."""
     try:
-        handler = ChromaDBHandler(persist_dir)
+        handler = ChromaDBHandler()
         
         embeddings = OllamaEmbeddings(
             base_url='http://localhost:11434',
@@ -78,15 +66,10 @@ def init_chroma(persist_dir: str = 'jj') -> Optional[Chroma]:
         )
         
         return Chroma(
-            persist_directory=persist_dir,
             embedding_function=embeddings,
             client_settings=handler._settings,
             client=handler.client
         )
-    except ImportError as e:
-        st.error("ChromaDB is not properly installed. Please check your installation.")
-        logger.error(f"ChromaDB import error: {str(e)}")
-        return None
     except Exception as e:
         st.error(f"Failed to initialize ChromaDB: {str(e)}")
         logger.error(f"ChromaDB initialization error: {str(e)}")
@@ -171,15 +154,13 @@ def process_pdf(file) -> Optional[Chroma]:
         )
         
         # Update vector store
-        handler = ChromaDBHandler('jj')
+        handler = ChromaDBHandler()
         vectorstore = Chroma.from_documents(
             documents=splits,
             embedding=embeddings,
-            persist_directory='jj',
             client_settings=handler._settings,
             client=handler.client
         )
-        vectorstore.persist()
         
         return vectorstore
     except Exception as e:
