@@ -11,9 +11,7 @@ from langchain.memory import ConversationBufferMemory
 import streamlit as st
 import os
 import time
-__import__('pysqlite3')
 import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 if not os.path.exists('files'):
     os.mkdir('files')
