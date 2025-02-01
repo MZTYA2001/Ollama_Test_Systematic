@@ -3,7 +3,7 @@ from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain.callbacks.manager import CallbackManager
 from langchain_community.llms import Ollama
 from langchain_community.embeddings.ollama import OllamaEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.prompts import PromptTemplate
@@ -19,60 +19,25 @@ from typing import Optional
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-import chromadb
-from chromadb.config import Settings
-
 # Create necessary directories
 os.makedirs('files', exist_ok=True)
 
-class ChromaDBHandler:
-    """Handler for ChromaDB operations with better error management."""
-    
-    def __init__(self):
-        self._client = None
-        self._settings = None
-        self.init_settings()
-    
-    def init_settings(self):
-        """Initialize ChromaDB settings."""
-        try:
-            self._settings = Settings(
-                is_persistent=False,  # Use in-memory storage
-                anonymized_telemetry=False
-            )
-        except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB settings: {str(e)}")
-            raise
-
-    @property
-    def client(self):
-        """Get ChromaDB client with lazy initialization."""
-        if self._client is None:
-            try:
-                self._client = chromadb.Client(settings=self._settings)
-            except Exception as e:
-                logger.error(f"Failed to initialize ChromaDB client: {str(e)}")
-                raise
-        return self._client
-
-def init_chroma() -> Optional[Chroma]:
-    """Initialize ChromaDB with proper settings and error handling."""
+def init_vectorstore() -> Optional[FAISS]:
+    """Initialize FAISS vector store with error handling."""
     try:
-        handler = ChromaDBHandler()
-        
         embeddings = OllamaEmbeddings(
             base_url='http://localhost:11434',
             model="mistral"
         )
         
-        return Chroma(
-            embedding_function=embeddings,
-            client_settings=handler._settings,
-            client=handler.client
+        # Create an empty FAISS index
+        return FAISS.from_texts(
+            texts=[""], 
+            embedding=embeddings
         )
     except Exception as e:
-        st.error(f"Failed to initialize ChromaDB: {str(e)}")
-        logger.error(f"ChromaDB initialization error: {str(e)}")
+        st.error(f"Failed to initialize vector store: {str(e)}")
+        logger.error(f"Vector store initialization error: {str(e)}")
         return None
 
 def init_session_state():
@@ -100,7 +65,7 @@ def init_session_state():
         )
 
     if 'vectorstore' not in st.session_state:
-        vectorstore = init_chroma()
+        vectorstore = init_vectorstore()
         if vectorstore is None:
             st.error("Failed to initialize vector store. Please check the logs for details.")
             sys.exit(1)
@@ -122,7 +87,7 @@ def init_session_state():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
 
-def process_pdf(file) -> Optional[Chroma]:
+def process_pdf(file) -> Optional[FAISS]:
     """Process uploaded PDF file with error handling."""
     try:
         file_path = os.path.join("files", f"{file.name}.pdf")
@@ -153,13 +118,10 @@ def process_pdf(file) -> Optional[Chroma]:
             base_url="http://localhost:11434"
         )
         
-        # Update vector store
-        handler = ChromaDBHandler()
-        vectorstore = Chroma.from_documents(
+        # Create FAISS index from documents
+        vectorstore = FAISS.from_documents(
             documents=splits,
-            embedding=embeddings,
-            client_settings=handler._settings,
-            client=handler.client
+            embedding=embeddings
         )
         
         return vectorstore
