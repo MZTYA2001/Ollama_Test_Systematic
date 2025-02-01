@@ -1,4 +1,4 @@
 ﻿langchain==0.1.13
 streamlit==1.32.2
-chromadb==0.4.24
+faiss-cpu==1.7.4
 pypdf==4.1.0
